@@ -1,5 +1,5 @@
 #!/bin/bash
-# Usage: ./run.sh [--test] [--headed] [--debug] [--traces] [--notify-test]
+# Usage: ./run.sh [--test] [--headed] [--debug] [--traces] [--learn] [--notify-test]
 # Headless by default; all runtime flags are CLI args.
 
 if [ ! -d "venv" ]; then

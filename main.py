@@ -6,7 +6,7 @@ import logging
 import os
 from config import Config
 from notifier import Notifier
-from rvsq_checker import RVSQChecker
+from rvsq_checker import LearnCapture, RVSQChecker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,6 +23,7 @@ def parse_args():
     parser.add_argument("--headed", action="store_true", help="Show the browser window")
     parser.add_argument("--debug", action="store_true", help="Verbose logs and page HTML dumps")
     parser.add_argument("--traces", action="store_true", help="Save Playwright trace zips")
+    parser.add_argument("--learn", action="store_true", help="Capture and stop on an unknown availability page")
     parser.add_argument("--notify-test", action="store_true", help="Send a sample notification and exit")
     return parser.parse_args()
 
@@ -67,9 +68,16 @@ class RVSQScheduler:
             else:
                 logger.info("No available appointments found")
                  
+        except LearnCapture:
+            raise
         except Exception as e:
             logger.error(f"Check failed: {e}")
             self.notifier.notify_error(str(e))
+
+    def handle_capture(self, capture: LearnCapture):
+        logger.warning(f"Learn capture: {capture.path} (service: {capture.service})")
+        self.notifier.notify_capture(capture.path, capture.service, capture.url)
+        logger.warning("Monitoring stopped - send the captured file back to update the parser")
 
     def start(self):
         lo = self.config.check_interval_min_minutes
@@ -78,7 +86,11 @@ class RVSQScheduler:
         logger.debug(f"Trace directory: {self.trace_dir}")
         
         while True:
-            self.run_check()
+            try:
+                self.run_check()
+            except LearnCapture as capture:
+                self.handle_capture(capture)
+                return
             wait_minutes = random.uniform(lo, hi)
             logger.info(f"Sleeping {wait_minutes:.1f} minutes before the next check")
             time.sleep(wait_minutes * 60)
@@ -91,6 +103,7 @@ if __name__ == "__main__":
     scheduler = RVSQScheduler(headless=not args.headed)
     scheduler.config.rvsq.save_traces = args.traces
     scheduler.config.rvsq.debug = args.debug
+    scheduler.config.rvsq.learn = args.learn
     
     if args.notify_test:
         logger.info("Sending sample notification...")
@@ -104,6 +117,9 @@ if __name__ == "__main__":
         logger.info("Notification test finished")
     elif args.test:
         logger.info("Running in TEST mode - single check, no scheduling")
-        scheduler.run_check()
+        try:
+            scheduler.run_check()
+        except LearnCapture as capture:
+            scheduler.handle_capture(capture)
     else:
         scheduler.start()

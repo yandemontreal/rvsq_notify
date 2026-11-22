@@ -34,6 +34,7 @@ class RVSQConfig:
     perimeter_km: int = 50
     save_traces: bool = False
     debug: bool = False
+    learn: bool = False
     service_reasons: tuple[str, ...] = DEFAULT_SERVICE_REASONS
 
 @dataclass

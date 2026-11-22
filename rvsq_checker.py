@@ -13,6 +13,16 @@ if not logging.getLogger().handlers:
     logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+class LearnCapture(Exception):
+    """Raised in --learn mode when an unrecognised availability page is saved."""
+
+    def __init__(self, path: str, service: str, url: str):
+        self.path = path
+        self.service = service
+        self.url = url
+        super().__init__(f"Captured availability page for '{service}' at {path}")
+
 class RVSQChecker:
     BASE_URL = "https://rvsq.gouv.qc.ca"
     RENDEZ_VOUS_URL = "https://www.rvsq.gouv.qc.ca/prendrerendezvous/Default.aspx?culture=fr"
@@ -148,6 +158,16 @@ class RVSQChecker:
         screenshot_path = os.path.join(self.trace_dir, f"screenshot_{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
         await self.page.screenshot(path=screenshot_path, full_page=True)
         logger.info(f"Screenshot saved: {screenshot_path}")
+
+    async def _capture_learn_page(self, reason: str) -> str:
+        """Save the page that differs from the known "no availability" state."""
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(self.trace_dir, f"learn_{_slug(reason)}_{stamp}.html")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(await self.page.content())
+        await self._screenshot(f"learn_{_slug(reason)}", force=True)
+        logger.info(f"Learn capture saved: {path}")
+        return path
 
     async def _dump_html(self, name: str):
         """Save the current page HTML so selectors can be derived from it."""
@@ -439,6 +459,13 @@ class RVSQChecker:
                     logger.info(f"No availability for '{reason}'")
                     continue
                 
+                # The page is not the "no availability" state. We do not know
+                # exactly how a real availability page looks, so --learn saves
+                # it and stops rather than guessing.
+                if self.config.learn:
+                    path = await self._capture_learn_page(reason)
+                    raise LearnCapture(path, reason, self.page.url)
+                
                 appointments = await self._parse_clinics(reason)
                 if appointments:
                     logger.info(f"Availability found for '{reason}'")
@@ -448,6 +475,8 @@ class RVSQChecker:
             logger.info("No availability found for any requested service")
             return []
             
+        except LearnCapture:
+            raise
         except Exception as e:
             logger.error(f"Error checking availability: {e}", exc_info=True)
             await self._screenshot("error_availability", force=True)

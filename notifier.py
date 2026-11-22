@@ -107,6 +107,30 @@ class Notifier:
         self.send_email(subject, body)
         self.send_telegram(message)
 
+    def notify_capture(self, path: str, service: str, url: str = "") -> None:
+        """Tell the user an unknown availability page was captured and saved."""
+        bell = "\U0001F514"
+        folder = "\U0001F4C4"
+        esc = html.escape
+        subject = f"{bell} RVSQ: availability page captured ({service})"
+        body = f"""
+        <h2>Possible availability found</h2>
+        <p><strong>Service:</strong> {esc(service)}</p>
+        <p><strong>Page result:</strong> not the usual "no availability" state.</p>
+        <p><strong>Saved file:</strong> {esc(path)}</p>
+        {f'<p><strong>URL:</strong> {esc(url)}</p>' if url else ''}
+        <hr>
+        <p>Monitoring was stopped. Send this file back so the parser can be updated.</p>
+        """
+        message = (
+            f"{bell} <b>RVSQ: possible availability</b>\n\n"
+            f"\U0001FA7A <b>Service:</b> {esc(service)}\n"
+            f"{folder} <b>File:</b> <code>{esc(path)}</code>\n\n"
+            f"Monitoring stopped. Send the file back to update the script."
+        )
+        self.send_email(subject, body)
+        self.send_telegram(message)
+
     def notify_error(self, error: str) -> None:
         warning = "\u26A0\uFE0F"
         error_safe = html.escape(error[:1500])
