@@ -616,59 +616,197 @@ class RVSQChecker:
             for sel in ('#clinicsWithDisponibilities', '#clinicsWithNoDisponibilitiesContainer'):
                 if await self._is_visible(sel, timeout=250):
                     logger.info(f"Search results ready ({sel})")
+                    if sel == '#clinicsWithDisponibilities':
+                        # Cards are injected after the heading appears.
+                        for _ in range(20):
+                            if await self.page.locator('#ClinicList > li').count():
+                                break
+                            await asyncio.sleep(0.2)
                     return True
             if await self._is_challenge_page():
                 await self._wait_for_cloudflare(30)
             await asyncio.sleep(0.5)
         return False
 
+    CALENDAR = '.h-AppointmentSelection .h-Calendar'
+
     async def _parse_clinics(self, reason: str = "") -> list[dict]:
-        """Read the clinic cards rendered into #ClinicList."""
-        appointments: list[dict] = []
+        """Open each clinic card and collect every slot from its weekly calendar."""
+        slots: list[dict] = []
+        seen: set[tuple] = set()
         cards = self.page.locator('#ClinicList > li')
         count = await cards.count()
         logger.info(f"Found {count} clinic result(s) with availability")
         
         for i in range(count):
-            card = cards.nth(i)
+            card = self.page.locator('#ClinicList > li').nth(i)
             try:
-                clinic = (await card.locator('h2.clinic-title').inner_text()).strip()
-                paragraphs = card.locator('p')
-                address = ""
-                if await paragraphs.count():
-                    address = " ".join((await paragraphs.first.inner_text()).split())
-                
-                when = ""
-                gold = card.locator('.tmbDate span.gold')
-                if await gold.count():
-                    when = " ".join((await gold.first.inner_text()).split())
-                
-                link = card.locator('a.h-selectClinic')
-                start_raw = await link.get_attribute('data-startDate') or ""
-                booking = " | ".join(
-                    f"{k}={v}" for k, v in {
-                        "CompanyId": await link.get_attribute('data-CompanyId'),
-                        "ProfessionalId": await link.get_attribute('data-ProfessionalId'),
-                        "CompanyAdressId": await link.get_attribute('data-CompanyAdressId'),
-                        "startDate": start_raw,
-                    }.items() if v
-                )
-                
-                date, time = self._split_datetime(start_raw, when)
-                appt = {
-                    "doctor": (self.config.doctor_name or clinic).strip(),
-                    "clinic": clinic or address,
-                    "date": date,
-                    "time": time,
-                    "booking_url": booking,
-                    "service": reason,
-                }
-                appointments.append(appt)
-                logger.info(f"Availability {i + 1}: {appt['clinic']} - {date} {time}")
+                info = await self._read_clinic_card(card)
             except Exception as e:
-                logger.warning(f"Could not parse clinic result {i + 1}: {e}")
+                logger.warning(f"Could not read clinic card {i + 1}: {e}")
+                continue
+            
+            try:
+                await card.locator('a.h-selectClinic').click()
+                if not await self._wait_for_calendar():
+                    logger.warning(f"No calendar for clinic {info['clinic']}")
+                else:
+                    await self._select_doctor_if_asked()
+                    found = await self._collect_slots(info, reason)
+                    for slot in found:
+                        key = (slot["clinic"], slot["date"], slot["time"], slot["booking_url"])
+                        if key not in seen:
+                            seen.add(key)
+                            slots.append(slot)
+                    logger.info(f"{len(found)} slot(s) at {info['clinic']}")
+            except Exception as e:
+                logger.warning(f"Could not collect slots for {info['clinic']}: {e}")
+            finally:
+                await self._back_to_results()
         
-        return appointments
+        return slots
+
+    async def _read_clinic_card(self, card) -> dict:
+        clinic = ""
+        try:
+            clinic = " ".join((await card.locator('h2.clinic-title').inner_text()).split())
+        except Exception:
+            pass
+        
+        address = ""
+        phone = ""
+        texts = card.locator('p')
+        paras = []
+        for i in range(min(await texts.count(), 3)):
+            text = " ".join((await texts.nth(i).inner_text()).split())
+            if text:
+                paras.append(text)
+        if paras:
+            address = paras[0]
+        for text in paras:
+            if any(ch.isdigit() for ch in text) and "-" in text and len(text) < 40:
+                phone = text
+        
+        link = card.locator('a.h-selectClinic')
+        ids = {
+            name: await link.get_attribute(attr)
+            for name, attr in (
+                ("CompanyId", "data-CompanyId"),
+                ("ProfessionalId", "data-ProfessionalId"),
+                ("CompanyAdressId", "data-CompanyAdressId"),
+            )
+        }
+        return {
+            "clinic": clinic or address,
+            "address": address,
+            "phone": phone,
+            "ids": " | ".join(f"{k}={v}" for k, v in ids.items() if v),
+        }
+
+    async def _wait_for_calendar(self, timeout: int = 20000) -> bool:
+        """Wait for the weekly calendar and at least one slot button."""
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            if await self._is_visible(self.CALENDAR, timeout=250):
+                if await self.page.locator(f'{self.CALENDAR} td.h-Day').count():
+                    try:
+                        await self.page.wait_for_selector(
+                            f'{self.CALENDAR} .h-TimeButton', timeout=3000
+                        )
+                        return True
+                    except Exception:
+                        pass
+            await asyncio.sleep(0.4)
+        return False
+
+    async def _collect_slots(self, info: dict, reason: str, max_weeks: int = 12) -> list[dict]:
+        """Walk the calendar week by week and read every slot button."""
+        slots: list[dict] = []
+        seen: set[tuple] = set()
+        for week in range(max_weeks):
+            for slot in await self._read_week(info, reason):
+                key = (slot["date"], slot["time"], slot["booking_url"])
+                if key not in seen:
+                    seen.add(key)
+                    slots.append(slot)
+            
+            next_btn = self.page.locator('#assure-next-btn')
+            if not await next_btn.count():
+                break
+            if await next_btn.is_disabled():
+                break
+            await next_btn.click()
+            await asyncio.sleep(0.8)
+            if not await self._is_visible(self.CALENDAR, timeout=3000):
+                break
+        return slots
+
+    async def _read_week(self, info: dict, reason: str) -> list[dict]:
+        rows = await self.page.evaluate(
+            """cal => {
+                const out = [];
+                document.querySelectorAll(cal + ' td.h-Day').forEach(td => {
+                    const date = parseInt(td.getAttribute('data-date'));
+                    td.querySelectorAll('.h-TimeButton').forEach(btn => {
+                        out.push({
+                            date: date,
+                            time: parseInt(btn.getAttribute('data-time')),
+                            ids: btn.getAttribute('data-ids') || '',
+                            label: (btn.innerText || '').replace(/\s+/g, ' ').trim(),
+                            cat: btn.getAttribute('data-cat') || '',
+                            isips: btn.getAttribute('data-isIPS') || ''
+                        });
+                    });
+                });
+                return out;
+            }""",
+            self.CALENDAR,
+        )
+        
+        slots = []
+        for row in rows or []:
+            ids = [i for i in (row.get("ids") or "").split(",") if i]
+            slots.append({
+                "doctor": (self.config.doctor_name or info["clinic"]).strip(),
+                "clinic": info["clinic"],
+                "address": info.get("address", ""),
+                "phone": info.get("phone", ""),
+                "date": self._format_epoch(row.get("date"), "%Y-%m-%d"),
+                "time": self._format_epoch(row.get("time"), "%H:%M") or row.get("label", ""),
+                "count": max(1, len(ids)),
+                "booking_url": info.get("ids", ""),
+                "service": reason,
+                "category": row.get("cat", ""),
+                "is_ips": row.get("isips", ""),
+            })
+        return slots
+
+    @staticmethod
+    def _format_epoch(value, fmt: str = "%Y-%m-%d %H:%M") -> str:
+        if not value:
+            return ""
+        try:
+            from datetime import timezone
+            from zoneinfo import ZoneInfo
+            dt = datetime.fromtimestamp(int(value) / 1000, tz=timezone.utc)
+            return dt.astimezone(ZoneInfo("America/Toronto")).strftime(fmt)
+        except Exception:
+            return ""
+
+    async def _back_to_results(self) -> None:
+        """Return from the calendar view to the clinic list."""
+        try:
+            if await self._is_visible('#ClinicList', timeout=500):
+                return
+            back = self.page.locator('.h-AppointmentSelection button.h-BackButton, button.h-BackButton').first
+            if await back.count() and await back.is_visible():
+                await back.click()
+        except Exception as e:
+            logger.debug(f"Back navigation issue: {e}")
+        try:
+            await self.page.wait_for_selector('#ClinicList > li', state="visible", timeout=5000)
+        except Exception:
+            pass
 
     @staticmethod
     def _split_datetime(start_raw: str, display: str) -> tuple[str, str]:

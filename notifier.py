@@ -107,6 +107,73 @@ class Notifier:
         self.send_email(subject, body)
         self.send_telegram(message)
 
+    TELEGRAM_LIMIT = 3800
+
+    def notify_slots(self, appointments: list[dict]) -> None:
+        """Send every collected slot, grouped by clinic."""
+        if not appointments:
+            return
+        esc = html.escape
+        groups: dict[tuple, list[dict]] = {}
+        for appt in appointments:
+            key = (appt.get("service", ""), appt.get("clinic", ""), appt.get("doctor", ""))
+            groups.setdefault(key, []).append(appt)
+        
+        total = len(appointments)
+        subject = f"\U0001F3E5 RVSQ: {total} slot(s) available"
+        
+        blocks = []
+        for (service, clinic, doctor), items in groups.items():
+            lines = []
+            for appt in sorted(items, key=lambda a: (a.get("date", ""), a.get("time", ""))):
+                count = appt.get("count", 1)
+                suffix = f" ({count})" if count and count > 1 else ""
+                when = " ".join(p for p in (appt.get("date", ""), appt.get("time", "")) if p)
+                lines.append(f"<li>{esc(when)}{suffix}</li>")
+            meta = []
+            if clinic:
+                meta.append(f"<strong>Clinic:</strong> {esc(clinic)}")
+            if doctor and doctor != clinic:
+                meta.append(f"<strong>Doctor:</strong> {esc(doctor)}")
+            if items[0].get("address"):
+                meta.append(f"<strong>Address:</strong> {esc(items[0]['address'])}")
+            if items[0].get("phone"):
+                meta.append(f"<strong>Phone:</strong> {esc(items[0]['phone'])}")
+            if service:
+                meta.append(f"<strong>Service:</strong> {esc(service)}")
+            blocks.append(
+                "<hr>" + "<br>".join(meta) + f"<ul>{''.join(lines)}</ul>"
+            )
+        body = f"<h2>{total} available slot(s)</h2>" + "".join(blocks)
+        self.send_email(subject, body)
+        
+        lines = [f"\U0001F3E5 <b>RVSQ: {total} slot(s) available</b>"]
+        for (service, clinic, doctor), items in groups.items():
+            header = []
+            if clinic:
+                header.append(f"<b>{esc(clinic)}</b>")
+            if doctor and doctor != clinic:
+                header.append(esc(doctor))
+            if service:
+                header.append(f"({esc(service)})")
+            lines.append("")
+            lines.append("\U0001FA7A " + " - ".join(header))
+            if items[0].get("address"):
+                lines.append(f"\U0001F4CD {esc(items[0]['address'])}")
+            if items[0].get("phone"):
+                lines.append(f"\U0001F4DE {esc(items[0]['phone'])}")
+            for appt in sorted(items, key=lambda a: (a.get("date", ""), a.get("time", ""))):
+                count = appt.get("count", 1)
+                suffix = f" ({count})" if count and count > 1 else ""
+                when = " ".join(p for p in (appt.get("date", ""), appt.get("time", "")) if p)
+                lines.append(f"\U0001F4C5 {esc(when)}{suffix}")
+        
+        message = "\n".join(lines)
+        if len(message) > self.TELEGRAM_LIMIT:
+            message = message[: self.TELEGRAM_LIMIT].rsplit("\n", 1)[0]
+            message += "\n\u2026 more slots, see email"
+        self.send_telegram(message)
+
     def notify_capture(self, path: str, service: str, url: str = "") -> None:
         """Tell the user an unknown availability page was captured and saved."""
         bell = "\U0001F514"

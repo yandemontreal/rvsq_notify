@@ -50,21 +50,23 @@ class RVSQScheduler:
             if appointments:
                 logger.info(f"Found {len(appointments)} available slot(s)")
                 for appt in appointments:
-                    key = f"{appt['doctor']}|{appt['date']}|{appt['time']}"
-                    
-                    if key not in self.last_notified:
-                        self.notifier.notify_availability(
-                            doctor_name=appt["doctor"],
-                            clinic=appt["clinic"],
-                            date=appt["date"],
-                            time=appt["time"],
-                            booking_url=appt.get("booking_url", ""),
-                            service=appt.get("service", ""),
-                        )
-                        self.last_notified.add(key)
-                        logger.info(f"Notified about: {appt['doctor']} on {appt['date']} at {appt['time']} ({appt.get('service', '')})")
-                    else:
-                        logger.info(f"Already notified about: {key}")
+                    logger.info(
+                        f"  {appt.get('date', '')} {appt.get('time', '')} - "
+                        f"{appt.get('clinic', '')} ({appt.get('service', '')})"
+                    )
+                fingerprint = tuple(sorted(
+                    f"{a.get('clinic', '')}|{a.get('date', '')}|{a.get('time', '')}"
+                    for a in appointments
+                ))
+                if fingerprint in self.last_notified:
+                    logger.info("Already notified about this exact set of slots")
+                else:
+                    self.notifier.notify_slots(appointments)
+                    self.last_notified.add(fingerprint)
+                    if len(self.last_notified) > 50:
+                        self.last_notified.clear()
+                        self.last_notified.add(fingerprint)
+                    logger.info(f"Notified about {len(appointments)} slot(s)")
             else:
                 logger.info("No available appointments found")
                  
