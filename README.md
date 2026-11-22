@@ -20,9 +20,14 @@ It logs in with your RAMQ credentials, opens the appointment search for your doc
 
 ## Requirements
 
-- macOS (paths assume `/Applications/Google Chrome.app` for the User-Agent version).
 - Python 3.11+.
-- Google Chrome installed.
+- Google Chrome installed. The User-Agent version is read from the install; set `CHROME_VERSION` if it cannot be detected.
+
+Platform support:
+
+- macOS/Linux: headed or headless (headless needs Chrome for the UA version; Cloudflare may still reject it).
+- Windows: headed only. Chrome is found via the registry; headless needs `CHROME_VERSION` and spoofs a Linux UA, which Cloudflare may reject. `run.sh` requires Git Bash or WSL.
+- Docker: headed Chromium under Xvfb; no Chrome install needed.
 
 ## Install
 
