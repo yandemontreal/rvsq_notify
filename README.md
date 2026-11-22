@@ -40,6 +40,36 @@ pip install -r requirements.txt
 ./run.sh --test
 ```
 
+## Docker
+
+The container runs headed Chromium under Xvfb (included in the Playwright image), because Cloudflare blocks headless browsers on the RVSQ site. Set `RVSQ_HEADLESS=1` to force headless if you know you do not need to pass Cloudflare.
+
+```bash
+docker build -t rvsq-notify .
+docker run --rm --shm-size=1g --env-file .env \
+  -v "$PWD/traces:/app/traces" \
+  -v "$PWD/.browser_profile:/app/.browser_profile" \
+  rvsq-notify --test
+```
+
+Run it continuously (randomized interval, no extra arguments):
+
+```bash
+docker run -d --name rvsq-notify --restart unless-stopped \
+  --shm-size=1g --env-file .env \
+  -v "$PWD/traces:/app/traces" \
+  -v "$PWD/.browser_profile:/app/.browser_profile" \
+  rvsq-notify
+```
+
+Or with Compose:
+
+```bash
+docker compose up -d --build
+```
+
+Mount `./.browser_profile` (note the leading dot) so the Cloudflare/session cookies persist between restarts and runs.
+
 ## Configure
 
 Copy `.env.example` to `.env` and fill it in:
@@ -112,7 +142,7 @@ The parser was derived from the site's own calendar rendering. If RVSQ changes t
 
 | Symptom | Cause |
 | --- | --- |
-| Stuck on "Un instant…" | Cloudflare challenge. Use real Chrome (`channel="chrome"`), keep headless with the UA override, or run `--headed`. |
+| Stuck on "Un instant…" | Cloudflare challenge. Use real Chrome (`channel="chrome"`), keep headless with the UA override, or run `--headed` (the container does this under Xvfb). |
 | "Login rejected by RVSQ: Attention! …" | Credentials do not match a RAMQ file; verify the five identity fields. |
 | No slots ever reported | Confirm `DOCTOR_NAME` matches the landing tile text. |
 | Telegram 404 | Placeholder or invalid bot token; regenerate with @BotFather. |
@@ -128,6 +158,7 @@ The parser was derived from the site's own calendar rendering. If RVSQ changes t
 | `notifier.py` | Telegram and email delivery |
 | `config.py` | Environment configuration and validation |
 | `run.sh` | venv bootstrap and argument passthrough |
+| `Dockerfile`, `docker-entrypoint.sh`, `docker-compose.yml` | container build (headed Chromium under Xvfb) |
 | `.env.example` | Configuration template |
 
 `.env`, `venv/`, `traces/` and `.browser_profile/` are intentionally ignored by git.

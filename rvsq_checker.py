@@ -4,6 +4,7 @@ import logging
 import os
 import random
 import re
+import sys
 from datetime import datetime
 from typing import Optional
 from playwright.async_api import async_playwright, Page, Browser, Response, BrowserContext
@@ -61,12 +62,13 @@ class RVSQChecker:
             if user_agent:
                 logger.info(f"Headless mode: using desktop UA {user_agent}")
         
-        # Use a persistent context with real Chrome. This keeps cookies
-        # (including Cloudflare clearance) across runs and avoids the
-        # automation fingerprints of Playwright's bundled Chromium build.
+        # Use a persistent context so cookies (including Cloudflare
+        # clearance) survive between runs. BROWSER_CHANNEL selects the
+        # binary: "chrome" (desktop) or "chromium" (containers).
+        channel = (os.getenv("BROWSER_CHANNEL", "chrome") or "").strip() or None
         self.context = await self.playwright.chromium.launch_persistent_context(
             user_data_dir=self.profile_dir,
-            channel="chrome",
+            channel=channel,
             headless=self.config.headless,
             args=browser_args,
             user_agent=user_agent,
@@ -837,19 +839,43 @@ def _slug(value: str) -> str:
     return "".join(c if c.isalnum() else "_" for c in value.lower()).strip("_")
 
 
-def _desktop_chrome_user_agent() -> Optional[str]:
-    """Return a regular Chrome User-Agent (headless Chrome says HeadlessChrome)."""
-    version = None
+def _chrome_version() -> Optional[str]:
+    """Detect the installed Chrome/Chromium version (macOS or Linux)."""
     try:
         import plistlib
         with open("/Applications/Google Chrome.app/Contents/Info.plist", "rb") as f:
             version = plistlib.load(f).get("CFBundleShortVersionString")
+            if version:
+                return str(version)
     except Exception:
-        version = None
+        pass
+    
+    import subprocess
+    for exe in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+        try:
+            out = subprocess.run(
+                [exe, "--version"], capture_output=True, text=True, timeout=5
+            ).stdout
+            match = re.search(r"(\d+)\.(\d+)\.(\d+)\.(\d+)", out)
+            if match:
+                return match.group(0)
+        except Exception:
+            continue
+    
+    return os.getenv("CHROME_VERSION")
+
+
+def _desktop_chrome_user_agent() -> Optional[str]:
+    """Return a regular Chrome User-Agent (headless Chrome says HeadlessChrome)."""
+    version = _chrome_version()
     if not version:
         return None
     major = str(version).split(".")[0]
+    if sys.platform == "darwin":
+        platform = "Macintosh; Intel Mac OS X 10_15_7"
+    else:
+        platform = "X11; Linux x86_64"
     return (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        f"Mozilla/5.0 ({platform}) AppleWebKit/537.36 "
         f"(KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
     )

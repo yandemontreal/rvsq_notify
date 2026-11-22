@@ -10,6 +10,7 @@ venv/
 # Runtime artifacts
 traces/
 .browser_profile/
+browser_profile/
 
 # OS
 .DS_Store

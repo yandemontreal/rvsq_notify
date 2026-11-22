@@ -1,0 +1,12 @@
+services:
+  rvsq-notify:
+    build: .
+    image: rvsq-notify
+    env_file: .env
+    environment:
+      BROWSER_CHANNEL: chromium
+    volumes:
+      - ./traces:/app/traces
+      - ./.browser_profile:/app/.browser_profile
+    shm_size: "1gb"
+    restart: unless-stopped
