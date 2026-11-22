@@ -4,6 +4,8 @@ import random
 import time
 import logging
 import os
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from config import Config
 from notifier import Notifier
 from rvsq_checker import LearnCapture, RVSQChecker
@@ -15,6 +17,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def _hhmm_minutes(value: str) -> int:
+    hour, minute = value.split(":")
+    return int(hour) * 60 + int(minute)
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="RVSQ Appointment Checker (headless by default)"
@@ -25,6 +31,7 @@ def parse_args():
     parser.add_argument("--traces", action="store_true", help="Save Playwright trace zips")
     parser.add_argument("--learn", action="store_true", help="Capture and stop on an unknown availability page")
     parser.add_argument("--notify-test", action="store_true", help="Send a sample notification and exit")
+    parser.add_argument("--keep-scanning", action="store_true", help="Keep polling after a slot is found (default: stop)")
     return parser.parse_args()
 
 class RVSQScheduler:
@@ -37,9 +44,66 @@ class RVSQScheduler:
         
         self.notifier = Notifier(self.config)
         self.last_notified = set()
+        self.keep_scanning = False
         self.trace_dir = os.getenv("TRACE_DIR", os.path.join(os.path.dirname(__file__), "traces"))
+        self.blackout = None
+        self.blackout_tz = timezone.utc
+        if self.config.blackout_start and self.config.blackout_end:
+            self.blackout = (
+                _hhmm_minutes(self.config.blackout_start),
+                _hhmm_minutes(self.config.blackout_end),
+            )
+            self.blackout_tz = ZoneInfo(self.config.blackout_timezone)
 
-    def run_check(self):
+    def _in_blackout(self, moment: datetime) -> bool:
+        if not self.blackout:
+            return False
+        start, end = self.blackout
+        minutes = moment.hour * 60 + moment.minute
+        if start <= end:
+            return start <= minutes < end
+        return minutes >= start or minutes < end
+
+    def _blackout_resume(self, moment: datetime) -> datetime:
+        start, end = self.blackout
+        minutes = moment.hour * 60 + moment.minute
+        day = moment.date()
+        if start <= end:
+            if minutes >= end:
+                day += timedelta(days=1)
+        elif minutes >= start:
+            day += timedelta(days=1)
+        hour, minute = divmod(end, 60)
+        return datetime(day.year, day.month, day.day, hour, minute, tzinfo=self.blackout_tz)
+
+    def _wait_for_blackout(self):
+        now = datetime.now(self.blackout_tz)
+        if not self._in_blackout(now):
+            return
+        resume = self._blackout_resume(now)
+        wait = max(0.0, (resume - now).total_seconds())
+        logger.info(
+            f"Blackout window active; pausing until {resume:%Y-%m-%d %H:%M %Z} "
+            f"({wait / 60:.0f} min)"
+        )
+        time.sleep(wait)
+
+    def _sleep_between_checks(self):
+        lo = self.config.check_interval_min_minutes
+        hi = self.config.check_interval_max_minutes
+        wait_minutes = random.uniform(lo, hi)
+        now = datetime.now(self.blackout_tz)
+        target = now + timedelta(minutes=wait_minutes)
+        if self._in_blackout(target):
+            target = self._blackout_resume(target)
+            logger.info(
+                f"Next check would fall in blackout; deferring until {target:%Y-%m-%d %H:%M %Z}"
+            )
+        else:
+            logger.info(f"Sleeping {wait_minutes:.1f} minutes before the next check")
+        time.sleep(max(0.0, (target - now).total_seconds()))
+
+    def run_check(self) -> bool:
         logger.info("Starting RVSQ availability check...")
         
         try:
@@ -67,6 +131,7 @@ class RVSQScheduler:
                         self.last_notified.clear()
                         self.last_notified.add(fingerprint)
                     logger.info(f"Notified about {len(appointments)} slot(s)")
+                return True
             else:
                 logger.info("No available appointments found")
                  
@@ -75,6 +140,7 @@ class RVSQScheduler:
         except Exception as e:
             logger.error(f"Check failed: {e}")
             self.notifier.notify_error(str(e))
+        return False
 
     def handle_capture(self, capture: LearnCapture):
         logger.warning(f"Learn capture: {capture.path} (service: {capture.service})")
@@ -86,16 +152,25 @@ class RVSQScheduler:
         hi = self.config.check_interval_max_minutes
         logger.info(f"Starting checker - next run in {lo}-{hi} minutes, randomized each cycle")
         logger.debug(f"Trace directory: {self.trace_dir}")
-        
+        if self.blackout:
+            logger.info(
+                f"Blackout window {self.config.blackout_start}-{self.config.blackout_end} "
+                f"{self.config.blackout_timezone} enabled"
+            )
+        if not self.keep_scanning:
+            logger.info("Will stop after the first slot is found (--keep-scanning to continue)")
+
         while True:
+            self._wait_for_blackout()
             try:
-                self.run_check()
+                found = self.run_check()
             except LearnCapture as capture:
                 self.handle_capture(capture)
                 return
-            wait_minutes = random.uniform(lo, hi)
-            logger.info(f"Sleeping {wait_minutes:.1f} minutes before the next check")
-            time.sleep(wait_minutes * 60)
+            if found and not self.keep_scanning:
+                logger.info("Slot found - stopping (use --keep-scanning to keep polling)")
+                return
+            self._sleep_between_checks()
 
 if __name__ == "__main__":
     args = parse_args()
@@ -106,6 +181,7 @@ if __name__ == "__main__":
     scheduler.config.rvsq.save_traces = args.traces
     scheduler.config.rvsq.debug = args.debug
     scheduler.config.rvsq.learn = args.learn
+    scheduler.keep_scanning = args.keep_scanning
     
     if args.notify_test:
         logger.info("Sending sample notification...")

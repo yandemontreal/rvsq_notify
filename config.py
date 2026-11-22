@@ -2,6 +2,7 @@
 import os
 import re
 from dataclasses import dataclass
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -59,6 +60,9 @@ class Config:
     telegram: TelegramConfig
     check_interval_min_minutes: int = 45
     check_interval_max_minutes: int = 90
+    blackout_start: str = ""
+    blackout_end: str = ""
+    blackout_timezone: str = "America/Toronto"
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -92,6 +96,11 @@ class Config:
             ),
             check_interval_min_minutes=int(os.getenv("CHECK_INTERVAL_MIN_MINUTES", "45")),
             check_interval_max_minutes=int(os.getenv("CHECK_INTERVAL_MAX_MINUTES", "90")),
+            blackout_start=os.getenv("BLACKOUT_START", "").strip(),
+            blackout_end=os.getenv("BLACKOUT_END", "").strip(),
+            blackout_timezone=(
+                os.getenv("BLACKOUT_TIMEZONE", "America/Toronto").strip() or "America/Toronto"
+            ),
         )
 
     def validate(self) -> list[str]:
@@ -110,6 +119,20 @@ class Config:
             errors.append("Check interval minutes must be positive")
         if self.check_interval_max_minutes < self.check_interval_min_minutes:
             errors.append("CHECK_INTERVAL_MAX_MINUTES must be >= CHECK_INTERVAL_MIN_MINUTES")
+        if bool(self.blackout_start) != bool(self.blackout_end):
+            errors.append("BLACKOUT_START and BLACKOUT_END must both be set or both empty")
+        elif self.blackout_start:
+            hhmm = re.compile(r"^([01]?\d|2[0-3]):[0-5]\d$")
+            if not hhmm.match(self.blackout_start) or not hhmm.match(self.blackout_end):
+                errors.append("Blackout times must use 24-hour HH:MM (e.g. 22:00)")
+            elif self.blackout_start == self.blackout_end:
+                errors.append("BLACKOUT_START and BLACKOUT_END must differ")
+            try:
+                ZoneInfo(self.blackout_timezone)
+            except (ZoneInfoNotFoundError, ValueError):
+                errors.append(
+                    f"BLACKOUT_TIMEZONE '{self.blackout_timezone}' is not a known IANA timezone"
+                )
         if self.email.enabled and not all([self.email.username, self.email.password, self.email.to_email]):
             errors.append("Email config incomplete")
         if self.telegram.enabled:

@@ -14,7 +14,8 @@ It logs in with your RAMQ credentials, opens the appointment search for your doc
 - Selects your doctor's tile, checks services in order (`Suivi`, `Consultation semi-urgente`, `Consultation urgente`), stops at the first with availability.
 - Opens each clinic card and collects **all** slots across the visible weeks, with clinic name, address, phone, date, time and slot count.
 - Notifies via Telegram (message capped and grouped by clinic) and email (complete list).
-- Randomized sleep between checks (`CHECK_INTERVAL_MIN_MINUTES` .. `CHECK_INTERVAL_MAX_MINUTES`).
+- Randomized sleep between checks (`CHECK_INTERVAL_MIN_MINUTES` .. `CHECK_INTERVAL_MAX_MINUTES`), with an optional blackout window (`BLACKOUT_START`/`BLACKOUT_END`, EST/EDT by default).
+- Stops after the first check that finds a slot; use `--keep-scanning` to keep polling.
 - `--learn` mode: if a result page is not the known "no availability" state, saves the page, notifies and stops so the parser can be updated.
 - Optional diagnostics: trace zips, screenshots, HTML dumps.
 
@@ -112,6 +113,8 @@ The bot token format is validated at startup, so a placeholder fails fast.
 | --- | --- |
 | `CHECK_INTERVAL_MIN_MINUTES` | Minimum sleep between checks (default 45) |
 | `CHECK_INTERVAL_MAX_MINUTES` | Maximum sleep between checks (default 90) |
+| `BLACKOUT_START`, `BLACKOUT_END` | `HH:MM` window where polling pauses (e.g. `20:00`/`08:00`); leave empty to disable |
+| `BLACKOUT_TIMEZONE` | IANA timezone for the window (default `America/Toronto`, i.e. EST/EDT) |
 | `TRACE_DIR` | Where diagnostics are written (default `./traces`) |
 | `BROWSER_PROFILE_DIR` | Persistent Chrome profile (default `./.browser_profile`) |
 
@@ -127,7 +130,10 @@ Runtime behaviour is controlled by CLI flags, not env vars:
 ./run.sh --traces        # save Playwright trace zips and screenshots
 ./run.sh --learn         # capture an unknown availability page, notify, stop
 ./run.sh --notify-test   # send a sample notification
+./run.sh --keep-scanning # keep polling after a slot is found (default: stop)
 ```
+
+By default the scheduler exits after the first check that finds a slot; `--keep-scanning` overrides that.
 
 Default run writes no artifacts. `--debug` and `--traces` are for troubleshooting, and failure screenshots are always kept.
 
@@ -137,7 +143,7 @@ Default run writes no artifacts. `--debug` and `--traces` are for troubleshootin
 2. Logs in by filling the exact ASP.NET WebForms fields, dismissing the cookie modal, then checks whether the form is still present to detect rejection (the alert text is logged).
 3. Clicks the doctor tile on the landing view to open the criteria screen, selects a service reason and searches.
 4. If the "no availability" alert is absent, clicks each clinic card, waits for the weekly calendar, and reads `td.h-Day[data-date]` columns and their `.h-TimeButton[data-time][data-ids]` slots, paging with the next-week button. Times are rendered in `America/Toronto`.
-5. Sends one notification per distinct set of slots, then sleeps a random interval and repeats.
+5. Sends one notification per distinct set of slots, then stops (or sleeps a random interval and repeats with `--keep-scanning`).
 
 ## Learn mode
 
