@@ -9,4 +9,4 @@ services:
       - ./traces:/app/traces
       - ./.browser_profile:/app/.browser_profile
     shm_size: "1gb"
-    restart: unless-stopped
+    restart: on-failure

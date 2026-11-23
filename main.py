@@ -76,17 +76,24 @@ class RVSQScheduler:
         hour, minute = divmod(end, 60)
         return datetime(day.year, day.month, day.day, hour, minute, tzinfo=self.blackout_tz)
 
+    def _sleep_until(self, target: datetime):
+        while True:
+            remaining = (target - datetime.now(self.blackout_tz)).total_seconds()
+            if remaining <= 0:
+                return
+            time.sleep(min(remaining, 30))
+
     def _wait_for_blackout(self):
         now = datetime.now(self.blackout_tz)
         if not self._in_blackout(now):
             return
         resume = self._blackout_resume(now)
-        wait = max(0.0, (resume - now).total_seconds())
+        wait_minutes = max(0.0, (resume - now).total_seconds()) / 60
         logger.info(
             f"Blackout window active; pausing until {resume:%Y-%m-%d %H:%M %Z} "
-            f"({wait / 60:.0f} min)"
+            f"({wait_minutes:.0f} min)"
         )
-        time.sleep(wait)
+        self._sleep_until(resume)
 
     def _sleep_between_checks(self):
         lo = self.config.check_interval_min_minutes
@@ -101,7 +108,7 @@ class RVSQScheduler:
             )
         else:
             logger.info(f"Sleeping {wait_minutes:.1f} minutes before the next check")
-        time.sleep(max(0.0, (target - now).total_seconds()))
+        self._sleep_until(target)
 
     def run_check(self) -> bool:
         logger.info("Starting RVSQ availability check...")

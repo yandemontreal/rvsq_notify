@@ -61,12 +61,14 @@ docker run --rm --shm-size=1g --env-file .env \
 Run it continuously (randomized interval, no extra arguments):
 
 ```bash
-docker run -d --name rvsq-notify --restart unless-stopped \
+docker run -d --name rvsq-notify --restart on-failure \
   --shm-size=1g --env-file .env \
   -v "$PWD/traces:/app/traces" \
   -v "$PWD/.browser_profile:/app/.browser_profile" \
   rvsq-notify
 ```
+
+`on-failure` (not `unless-stopped`) matters because the scheduler exits successfully after finding a slot; restarting it would start polling again. Add `--keep-scanning` to the command to keep it running.
 
 Or with Compose:
 
